@@ -1,0 +1,1678 @@
+-- Juice Goose KIN-1000 UPS
+-- Joshua Small
+-- 2026-09-23
+--[[
+  Juice Goose KIN-1000 UPS - Q-SYS Plugin
+  ---------------------------------------------------------------------------
+  Implements the binary RS-232 protocol from "KIN-1000 and RS-232
+  Communications Protocol.txt". This is a much thinner, older-style protocol
+  than an ASCII command set: single raw bytes are sent, and the UPS echoes a
+  fixed 16-byte binary status block in response to a poll byte.
+
+  READ THIS FIRST - the source document has real gaps/likely errors, more so
+  than a typical vendor protocol spec, so please treat the items below as
+  things to verify on the bench before relying on this in the field:
+
+  1) LINE SETTINGS: the document says "BPS = 1200, 1 START BIT, 1 END BIT,
+     16 DATA BIT". 16 data bits is not a real UART configuration (nothing,
+     including Q-SYS's serial port, supports it), so this is almost
+     certainly an OCR/transcription artifact of the original "8 DATA BIT".
+     This plugin opens the port at 1200 baud, 8 data bits, no parity, 1 stop
+     bit (8N1). If the unit does not respond, this is the first thing to
+     double check against Juice Goose directly.
+
+  2) NO ACKS: only the poll command (byte value 1) has a documented
+     response (16 raw bytes). Self-test, enable/disable AC-normal-restart,
+     wake-up-time, and pre-shutdown-count are implemented as fire-and-forget
+     writes with a short pacing delay before the next command, since the
+     document defines no response for them.
+
+  3) UNITS: the doc lists load/battery as raw bytes and calls them "load
+     level" / "battery level" with no scale given; input/output voltage and
+     frequency are likewise raw bytes with no scale given. This plugin
+     displays load and battery as raw byte values. Voltage and frequency
+     are shown with inferred V/Hz units.
+--]]
+-- Health colors follow Q-SYS Status; modes/activity use neutral gray.
+IndicatorGreen = {0, 159, 60}
+IndicatorRed = {223, 0, 36}
+IndicatorOrange = {230, 171, 56}
+IndicatorNeutral = {128, 128, 128}
+IndicatorRedHex = "#DF0024"
+IndicatorOrangeHex = "#E6AB38"
+
+PluginInfo = {
+  Name = "Juice Goose~KIN-1000",
+  Version = "1.0.0.25",
+  BuildVersion = "1.0.0.25",
+  Id = "f231dbeb-8be6-43ca-aa5c-b65359543d90",
+  Author = "Joshua Small",
+  Manufacturer = "Juice Goose",
+  Model = "KIN-1000",
+  Description = "RS-232 control and monitoring for the Juice Goose KIN-1000 UPS: load/battery levels, input/output voltage and frequency, AVR/overload/fault/battery/test-mode status, self-test, AC-normal-restart enable/disable, wake-up timer, and pre-shutdown countdown, per the KIN-1000 binary RS-232 protocol.",
+  ShowDebug = true,
+}
+
+BrandColor = {14, 13, 221}
+
+function GetColor(props)
+  return BrandColor
+end
+
+function GetPrettyName(props)
+  return "Juice Goose \x1DKIN-1000"
+end
+
+function GetProperties()
+  local props = {}
+  table.insert(
+    props,
+    {
+      Name = "Poll Interval (s)",
+      Type = "integer",
+      Min = 2,
+      Max = 60,
+      Value = 5
+      --[[     Comment = "Tx Status-poll byte (0x01), Rx 16-byte status block." ]]
+    }
+  )
+  table.insert(
+    props,
+    {
+      Name = "Debug Print",
+      Type = "enum",
+      Choices = {"None", "Tx/Rx", "Tx", "Rx", "All"},
+      Value = "None"
+    }
+  )
+  return props
+end
+
+function RectifyProperties(props)
+  if props["plugin_show_debug"] and props["plugin_show_debug"].Value == false then
+    props["Debug Print"].IsHidden = true
+  end
+  return props
+end
+
+function GetPins(props)
+  local pins = {}
+  table.insert(
+    pins,
+    {
+      Name = "Serial Port",
+      Direction = "input",
+      Domain = "serial"
+    }
+  )
+  return pins
+end
+
+function GetControls(props)
+  local ctrls = {}
+
+  table.insert(
+    ctrls,
+    {
+      Name = "ConnectionStatus",
+      ControlType = "Indicator",
+      IndicatorType = "Status",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "SystemFault",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(
+    ctrls,
+    {
+      Name = "LoadLevel",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "BatteryLevel",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "InputVoltage",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "OutputVoltage",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "InputFrequency",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "OutputFrequency",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "NominalVoltage",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "AVRMode",
+      ControlType = "Text",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(
+    ctrls,
+    {
+      Name = "OnBattery",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "LowBattery",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "AVRActive",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "Overload",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "Fault",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "BatteryBad",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "TestMode",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "PreSDCountActive",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "ScheduleCountActive",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "NoLoadShutdownDisabled",
+      ControlType = "Indicator",
+      IndicatorType = "Led",
+      PinStyle = "Output",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(
+    ctrls,
+    {
+      Name = "SelfTestBtn",
+      ControlType = "Button",
+      ButtonType = "Momentary",
+      PinStyle = "Input",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "EnableACRestartBtn",
+      ControlType = "Button",
+      ButtonType = "Momentary",
+      PinStyle = "Input",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "DisableACRestartBtn",
+      ControlType = "Button",
+      ButtonType = "Momentary",
+      PinStyle = "Input",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(
+    ctrls,
+    {
+      Name = "WakeUpMinutes",
+      ControlType = "Knob",
+      ControlUnit = "Integer",
+      Min = 0,
+      Max = 1440,
+      DefaultValue = 60,
+      PinStyle = "Both",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "SetWakeUpBtn",
+      ControlType = "Button",
+      ButtonType = "Momentary",
+      PinStyle = "Input",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(
+    ctrls,
+    {
+      Name = "PreSDMinutes",
+      ControlType = "Knob",
+      ControlUnit = "Integer",
+      Min = 0,
+      Max = 255,
+      DefaultValue = 1,
+      PinStyle = "Both",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "PreSDSeconds",
+      ControlType = "Knob",
+      ControlUnit = "Integer",
+      Min = 0,
+      Max = 59,
+      DefaultValue = 0,
+      PinStyle = "Both",
+      UserPin = true,
+      Count = 1
+    }
+  )
+  table.insert(
+    ctrls,
+    {
+      Name = "SetPreSDBtn",
+      ControlType = "Button",
+      ButtonType = "Momentary",
+      PinStyle = "Input",
+      UserPin = true,
+      Count = 1
+    }
+  )
+
+  table.insert(ctrls, {
+    Name = "ShutdownModeDisplay",
+    ControlType = "Text",
+    PinStyle = "Output",
+    UserPin = true,
+    Count = 1
+  })
+
+  return ctrls
+end
+
+function GetControlLayout(props)
+  local layout = {
+    BatteryLevel = {
+      PrettyName = "Readings~Battery Level",
+      Style = "Text",
+      Position = {250, 288},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    ConnectionStatus = {
+      PrettyName = "System~Connection",
+      Style = "Text",
+      Position = {5, 93},
+      Size = {300, 40},
+      Font = "Roboto",
+      FontSize = 14,
+      Color = {194, 194, 194},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 0
+    },
+    InputFrequency = {
+      PrettyName = "Readings~Input Frequency",
+      Style = "Text",
+      Position = {100, 328},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    InputVoltage = {
+      PrettyName = "Readings~Input Voltage",
+      Style = "Text",
+      Position = {100, 308},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    LoadLevel = {
+      PrettyName = "Readings~Load Level",
+      Style = "Text",
+      Position = {100, 288},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    OutputFrequency = {
+      PrettyName = "Readings~Output Frequency",
+      Style = "Text",
+      Position = {250, 328},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    OutputVoltage = {
+      PrettyName = "Readings~Output Voltage",
+      Style = "Text",
+      Position = {250, 308},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    PreSDSeconds = {
+      PrettyName = "Schedule~Pre-Shutdown Seconds",
+      Style = "Text",
+      Position = {245, 213},
+      Size = {30, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = false,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    SetPreSDBtn = {
+      PrettyName = "Schedule~Set Pre-Shutdown Countdown",
+      Style = "Button",
+      Position = {275, 213},
+      Size = {30, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      ButtonStyle = "Momentary",
+      ButtonVisualStyle = "Flat",
+      Legend = "",
+      CornerRadius = 2
+    },
+    SetWakeUpBtn = {
+      PrettyName = "Schedule~Set Wake-Up Time",
+      Style = "Button",
+      Position = {275, 173},
+      Size = {30, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      ButtonStyle = "Momentary",
+      ButtonVisualStyle = "Flat",
+      Legend = "",
+      CornerRadius = 2
+    },
+    SystemFault = {
+      PrettyName = "System~Fault",
+      Style = "Led",
+      Position = {5, 68},
+      Size = {20, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorRed,
+      HTextAlign = "Center",
+    },
+    WakeUpMinutes = {
+      PrettyName = "Schedule~Wake-Up Time (minutes)",
+      Style = "Text",
+      Position = {215, 173},
+      Size = {30, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = false,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    AVRActive = {
+      PrettyName = "Status~AVR On",
+      Style = "Led",
+      Position = {155, 446},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorNeutral,
+      HTextAlign = "Center",
+    },
+    BatteryBad = {
+      PrettyName = "Status~Bad Battery",
+      Style = "Led",
+      Position = {139, 430},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorRed,
+      HTextAlign = "Center",
+    },
+    Fault = {
+      PrettyName = "Status~Fault",
+      Style = "Led",
+      Position = {139, 462},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorRed,
+      HTextAlign = "Center",
+    },
+    LowBattery = {
+      PrettyName = "Status~Low Battery",
+      Style = "Led",
+      Position = {139, 414},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorOrange,
+      HTextAlign = "Center",
+    },
+    OnBattery = {
+      PrettyName = "Status~On Battery",
+      Style = "Led",
+      Position = {139, 398},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorOrange,
+      HTextAlign = "Center",
+    },
+    Overload = {
+      PrettyName = "Status~Overload",
+      Style = "Led",
+      Position = {139, 446},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorRed,
+      HTextAlign = "Center",
+    },
+    TestMode = {
+      PrettyName = "Status~Test Mode",
+      Style = "Led",
+      Position = {155, 462},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorNeutral,
+      HTextAlign = "Center",
+    },
+    NoLoadShutdownDisabled = {
+      PrettyName = "Status~No-Load Shutdown Disabled",
+      Style = "Led",
+      Position = {155, 430},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorNeutral,
+      HTextAlign = "Center",
+    },
+    PreSDCountActive = {
+      PrettyName = "Status~Pre-Shutdown Active",
+      Style = "Led",
+      Position = {155, 414},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorNeutral,
+      HTextAlign = "Center",
+    },
+    ScheduleCountActive = {
+      PrettyName = "Status~Schedule Active",
+      Style = "Led",
+      Position = {155, 398},
+      Size = {16, 16},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = IndicatorNeutral,
+      HTextAlign = "Center",
+    },
+    AVRMode = {
+      PrettyName = "Readings~AVR Mode",
+      Style = "Text",
+      Position = {100, 348},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    NominalVoltage = {
+      PrettyName = "Readings~Nominal Voltage",
+      Style = "Text",
+      Position = {100, 268},
+      Size = {205, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    ShutdownModeDisplay = {
+      PrettyName = "Status~Shutdown Mode Display",
+      Style = "Text",
+      Position = {250, 348},
+      Size = {55, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = true,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    PreSDMinutes = {
+      PrettyName = "Schedule~Pre-Shutdown Minutes",
+      Style = "Text",
+      Position = {215, 213},
+      Size = {30, 20},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      IsReadOnly = false,
+      StrokeColor = {105, 105, 105},
+      StrokeWidth = 1,
+      CornerRadius = 0,
+      Padding = 2,
+      Margin = 2
+    },
+    DisableACRestartBtn = {
+      PrettyName = "Commands~Disable AC Restart",
+      Style = "Button",
+      Position = {85, 218},
+      Size = {55, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      ButtonStyle = "Momentary",
+      ButtonVisualStyle = "Flat",
+      Legend = "",
+      CornerRadius = 2
+    },
+    EnableACRestartBtn = {
+      PrettyName = "Commands~Enable AC Restart",
+      Style = "Button",
+      Position = {85, 191},
+      Size = {55, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      ButtonStyle = "Momentary",
+      ButtonVisualStyle = "Flat",
+      Legend = "",
+      CornerRadius = 2
+    },
+    SelfTestBtn = {
+      PrettyName = "Commands~Self Test",
+      Style = "Button",
+      Position = {85, 163},
+      Size = {55, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {255, 255, 255},
+      HTextAlign = "Center",
+      ButtonStyle = "Momentary",
+      ButtonVisualStyle = "Flat",
+      Legend = "",
+      CornerRadius = 2
+    }
+  }
+  local graphics = {
+    {
+      Type = "GroupBox",
+      Position = {5, 57},
+      Size = {300, 6},
+      Fill = {14, 13, 221},
+      StrokeColor = {14, 13, 221},
+      StrokeWidth = 0
+    },
+    {
+      Type = "Label",
+      Text = "Load Level",
+      Position = {5, 288},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Battery Level",
+      Position = {155, 288},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Nominal Voltage",
+      Position = {5, 268},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "AVR Mode",
+      Position = {5, 348},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Wake Up Time",
+      Position = {140, 163},
+      Size = {75, 40},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Pre-Shutdown Counter",
+      Position = {140, 203},
+      Size = {75, 40},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Svg",
+      Position = {5, 5},
+      Size = {300, 47},
+      Image = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMTI2LjgwMzcwMTMyNDkgMTczLjExMDU3NzAyNTUiPgogIDxkZWZzPgogICAgPHN0eWxlPgogICAgICAuY2xzLTEgewogICAgICAgIGZpbGw6ICNmZmY7CiAgICAgIH0KCiAgICAgIC5jbHMtMiB7CiAgICAgICAgZmlsbDogIzBlMGRkZDsKICAgICAgfQogICAgPC9zdHlsZT4KICA8L2RlZnM+CiAgPGcgaWQ9IkxheWVyXzEtMiIgZGF0YS1uYW1lPSJMYXllciAxIj4KICAgIDxnIGlkPSJsb2dvIj4KICAgICAgPGcgaWQ9ImJhY2tncm91bmQiPgogICAgICAgIDxyZWN0IGlkPSJibGFjay1iYWNrZ3JvdW5kIiB3aWR0aD0iMTEyNi44MDM3MDEzMjQ5IiBoZWlnaHQ9IjE3My4xMTA1NzcwMjU1Ii8+CiAgICAgICAgPHJlY3QgaWQ9IndoaXRlLWJhY2tncm91bmQiIGNsYXNzPSJjbHMtMSIgeD0iNTc0LjE2NTUyOTI2MDQiIHk9IjEwLjA0MzM3NzYxNTIiIHdpZHRoPSI1NDIuODAzMTAwNTg1OSIgaGVpZ2h0PSIxNTMuMDA3ODczNTM1MiIvPgogICAgICA8L2c+CiAgICAgIDxnIGlkPSJ0ZXh0Ij4KICAgICAgICA8ZyBpZD0iSlVJQ0UiPgogICAgICAgICAgPHBhdGggaWQ9IkoiIGNsYXNzPSJjbHMtMSIgZD0iTTczLjYyNjI4MzY1NDksMTA1LjU4MTUyNDU4NzhjLjQyOTc0NzcwMDUsMTAuNjk2NjE0NTMyNi0xMC42NzQyODM0NDMzLDE0LjI3NzcwMjI5MjctMTcuNTA0NjM4NjcxOSw2LjM3MjEzMTM0NzdsLTUuMTczNjQ1MDE5NSw2Ljg4OTE2MDE1NjJjMTAuNDcyODQxODI4MSwxMS4zNTc0Mzc2MDIzLDMxLjg3OTI5MDk4ODksNS4yNTMwOTQ2NDk2LDMxLjU1NzQ0MTY3ODEtMTEuNDI3MzE1MTM5Ny4wMDAyMzY1NDQ2LjAwMDk4NDU3MzMuMjU3ODY1OTM5MS02My42MjQ4Njk5MTg5LjI1Nzg2NTkzOTEtNjMuNjI0ODY5OTE4OWwtOS4wMjE1NDU0MTAyLjAwMjc4MjE1OC0uMTE1NDc4NTE1Niw2MS43ODgxMTEzOTY3WiIvPgogICAgICAgICAgPHBhdGggaWQ9IlUiIGNsYXNzPSJjbHMtMSIgZD0iTTE5Ni42MzQyMTgyMjUzLDQzLjc1MDQwODg2NTJsLS4xNDY0MjMzMzk4LDU0LjgyMjIwNDU4OThjLS4wMTU2ODYwMzUyLDUuODQ1MTUzODA4Ni0yLjY3MTMyNTY4MzYsMTEuMDU2Mzk2NDg0NC03LjMxMzQ3NjU2MjUsMTQuMTMyMzI0MjE4OC05LjI5NzQ4NTM1MTYsNi4xNjA1ODM0OTYxLTIxLjY0NDY1MzMyMDMsNS40MDU4MjI3NTM5LTI5LjI5NTQ3MTE5MTQtMi45MDg2MzAzNzExLTMuMTIzMTA3OTEwMi0zLjM5NDA0Mjk2ODgtNC4xMDk0OTcwNzAzLTguNTQ5MTMzMzAwOC00LjEyNjcwODk4NDQtMTMuMTk3OTk4MDQ2OWwtLjE5NTE5MDQyOTctNTIuODQ3OTAwMzkwNmgtOS4zMTc4MTAwNTg2bC4yMTI3Njg1NTQ3LDU1Ljc4OTQ4OTc0NjFjLjAyODY4NjUyMzQsNy41MDM0NzkwMDM5LDMuMzQzMTM5NjQ4NCwxMy45NDI3NDkwMjM0LDkuMTk0NTE5MDQzLDE4LjYxNTY2MTYyMTEsMTEuMDIxNDIzMzM5OCw4LjgwMTY5Njc3NzMsMjYuODk2NDg0Mzc1LDkuNDg2MzI4MTI1LDM4LjYxMDE2ODQ1NywxLjc4NjY4MjEyODksNy45MDU5NDQ4MjQyLTUuMTk2NjU1MjczNCwxMS43Njg2NzY3NTc4LTEzLjAwNjk1ODAwNzgsMTEuNzYxOTAxODU1NS0yMi4zNDU2NDIwODk4bC0uMDM5MTg0NTcwMy01My44NDYxOTE0MDYyaC05LjM0NTA5Mjc3MzRaIi8+CiAgICAgICAgICA8cmVjdCBpZD0iSSIgY2xhc3M9ImNscy0xIiB4PSIyNjkuMjE5NDIzMzAzNCIgeT0iNDMuNzUwNDA4ODY1MiIgd2lkdGg9IjkuMzk5MDQ3ODUxNiIgaGVpZ2h0PSI4MC40MDg4NzQ1MTE3Ii8+CiAgICAgICAgICA8cGF0aCBpZD0iQyIgY2xhc3M9ImNscy0xIiBkPSJNMzU4LjU3MzY3MTM1MDMsMTA3LjYzMTAyNDA5OTZjLTEzLjM1MDk1MjE0ODQtMTIuODU1NjUxODU1NS0xMy42MjY0MDM4MDg2LTMzLjQwODI2NDE2MDItMS4wOTcxMDY5MzM2LTQ2LjQwMjg5MzA2NjQsMTMuMTEzODkxNjAxNi0xMy42MDA5NTIxNDg0LDMzLjkzMDE3NTc4MTItMTMuODA1Nzg2MTMyOCw0OC4yNzE0ODQzNzUuMDg0NzE2Nzk2OXYtMTEuMjM5OTkwMjM0NGMtMTQuMjA5Mjg5NTUwOC05Ljc2NDE2MDE1NjItMzIuNzY2OTA2NzM4My0xMC4wNDE2MjU5NzY2LTQ3LjI4NzQxNDU1MDgtLjg2NDAxMzY3MTktMTMuNTI2MzA2MTUyMyw4LjU0OTE5NDMzNTktMjEuNDkxMTQ5OTAyMywyNC4zNDk4NTM1MTU2LTE4Ljk0MDczNDg2MzMsNDEuMTY5MjUwNDg4MywyLjIwMjYzNjcxODgsMTQuNTI2MTIzMDQ2OSwxMi42MTYwMjc4MzIsMjYuMDQ5NjIxNTgyLDI0LjU5MzQ0NDgyNDIsMzEuMjM2MTQ1MDE5NSwxNC4zMzkzNTU0Njg4LDYuMjA5MzUwNTg1OSwyOS40MzE5NDU4MDA4LDQuMjY2Mjk2Mzg2Nyw0MS42MzQ3MDQ1ODk4LTQuMDc2MTEwODM5OHYtMTEuMzk0MTY1MDM5MWMtMTMuMzY2MzMzMDA3OCwxMy42MTYxNDk5MDIzLTMzLjk2NjQzMDY2NDEsMTQuMjA0OTU2MDU0Ny00Ny4xNzQzNzc0NDE0LDEuNDg3MDYwNTQ2OVoiLz4KICAgICAgICAgIDxwb2x5Z29uIGlkPSJFIiBjbGFzcz0iY2xzLTEiIHBvaW50cz0iNTA4LjAyNDc4MjE5MDEgNTIuNDA3MTQ3MTQ2NCA1MDguMDI0NzgyMTkwMSA0My45MDMxMTg4MjYxIDQ2Ni43NDM0MTAxMTk4IDQzLjkyNTE1MjUxNzUgNDY2LjY4MjQ5NzAzMzggMTI0LjAxODIzMTEzMDggNTA4LjAyNDc4MjE5MDEgMTIzLjk5MDY0MzI0MDIgNTA4LjAyNDc4MjE5MDEgMTE1LjQ5MDAzMjg4ODYgNDc1LjgxMjk5MDE5NzkgMTE1LjQ0MjA1OTI1NTggNDc1LjcxNDExMzI0NDggODQuMzA3NjU5ODQxNyA1MDcuMDAxNzcxOTM2MiA4NC4yOTk2MDMyMDExIDUwNy4wMDE3NzE5MzYyIDc1LjY5MDk2MDYyMyA0NzUuNzI2Njg2NDg3IDc1LjkyNjAwNzAwOTcgNDc1LjczMjQyMzc5MTcgNTIuMzA3NDE1NzAxMSA1MDguMDI0NzgyMTkwMSA1Mi40MDcxNDcxNDY0Ii8+CiAgICAgICAgPC9nPgogICAgICAgIDxnIGlkPSJHT09TRSI+CiAgICAgICAgICA8cGF0aCBpZD0iRyIgY2xhc3M9ImNscy0yIiBkPSJNNjg2Ljg3NzI5MTk3MjYsOTIuNjY5Njc4Njc4NWwtMjMuMTk3Nzk5Nzc4OC0uNDY4Nzc2NDYyN3YtOC41NzY5NzgyMjE4bDMzLjU5NjUwNDk4MS0uMDEyMzU0NzQ2NmMuNDY1MzYxNzAxOCw1NC44NTA2MTc1NDc2LTc0LjI5Mjc4NzE1OTksNTUuMDc2ODI2NjY1OS03OS43NzQ5MzM3NjU1LDIuNTMzMzcxMzMwNy0uOTY5NjIxNzMxMi00MS4zNzIyMTMxODY1LDQ5LjYyMTM3MzkwNDYtNTkuNDE3MzcyNTUxLDc1LjU2MzE1ODkyLTI2LjkzNjgzMzg3NDhsLTYuODY5ODA5ODg2OSw2LjcwMjA4ODIxNTdjLTE2Ljc4OTA2MzE4OS0yNy4xOTk0Njk1NDI3LTYwLjA5MDUyNjEwNzMtMTMuNjQxNzg2MjI4Mi01OS4yNjIyNDMyMjkyLDE4LjE5NjI3ODYwMjQtMS4wMDg5ODg2ODY3LDM1LjQ3ODc2NDg1OTgsNTQuMTE2MzAxNjc3NCw0Ni4zODQyMTgyMTA3LDU5Ljk0NTEyMjc1OTIsOC41NjMyMDUxNTcxWiIvPgogICAgICAgICAgPHBhdGggaWQ9Ik8iIGNsYXNzPSJjbHMtMiIgZD0iTTkyMi40OTgzNzM0NzUsODMuOTUzMjAxMTgyNWMwLDIyLjk0MzE0MTE1NjctMTguNTk5MDkwNzUxMyw0MS41NDIyMzE5MDgtNDEuNTQyMjMxOTA4LDQxLjU0MjIzMTkwOHMtNDEuNTQyMjMxOTA4LTE4LjU5OTA5MDc1MTMtNDEuNTQyMjMxOTA4LTQxLjU0MjIzMTkwOCwxOC41OTkwOTA3NTEzLTQxLjU0MjIzMTkwOCw0MS41NDIyMzE5MDgtNDEuNTQyMjMxOTA4LDQxLjU0MjIzMTkwOCwxOC41OTkwOTA3NTEzLDQxLjU0MjIzMTkwOCw0MS41NDIyMzE5MDhaTTkxMy41OTUxNDY2OTM2LDgzLjg2ODE4MjQ5MTljMC0xOC4wMDIzNDQxNzIyLTE0LjU5Mzc4MzQxOTEtMzIuNTk2MTI3NTkxNC0zMi41OTYxMjc1OTE0LTMyLjU5NjEyNzU5MTRzLTMyLjU5NjEyNzU5MTQsMTQuNTkzNzgzNDE5MS0zMi41OTYxMjc1OTE0LDMyLjU5NjEyNzU5MTQsMTQuNTkzNzgzNDE5MSwzMi41OTYxMjc1OTE0LDMyLjU5NjEyNzU5MTQsMzIuNTk2MTI3NTkxNCwzMi41OTYxMjc1OTE0LTE0LjU5Mzc4MzQxOTEsMzIuNTk2MTI3NTkxNC0zMi41OTYxMjc1OTE0WiIvPgogICAgICAgICAgPHBhdGggaWQ9Ik8tMiIgZGF0YS1uYW1lPSJPIiBjbGFzcz0iY2xzLTIiIGQ9Ik04MDcuOTc3OTYzNDM5OSw4My45NDg4ODkwMDQ1YzAsMjIuOTQ5NzQ2NzczMi0xOC42MDQ0NDU2NjE1LDQxLjU1NDE5MjQzNDYtNDEuNTU0MTkyNDM0Niw0MS41NTQxOTI0MzQ2cy00MS41NTQxOTI0MzQ2LTE4LjYwNDQ0NTY2MTUtNDEuNTU0MTkyNDM0Ni00MS41NTQxOTI0MzQ2LDE4LjYwNDQ0NTY2MTUtNDEuNTU0MTkyNDM0Niw0MS41NTQxOTI0MzQ2LTQxLjU1NDE5MjQzNDYsNDEuNTU0MTkyNDM0NiwxOC42MDQ0NDU2NjE1LDQxLjU1NDE5MjQzNDYsNDEuNTU0MTkyNDM0NlpNNzk5LjA3MjU5Mjk3NDQsODMuODYyOTk0NjEzMmMwLTE4LjAxMDU1ODc4NzItMTQuNjAwNDQyNjgwMy0zMi42MTEwMDE0Njc1LTMyLjYxMTAwMTQ2NzUtMzIuNjExMDAxNDY3NXMtMzIuNjExMDAxNDY3NSwxNC42MDA0NDI2ODAzLTMyLjYxMTAwMTQ2NzUsMzIuNjExMDAxNDY3NSwxNC42MDA0NDI2ODAzLDMyLjYxMTAwMTQ2NzUsMzIuNjExMDAxNDY3NSwzMi42MTEwMDE0Njc1LDMyLjYxMTAwMTQ2NzUtMTQuNjAwNDQyNjgwMywzMi42MTEwMDE0Njc1LTMyLjYxMTAwMTQ2NzVaIi8+CiAgICAgICAgICA8cGF0aCBpZD0iUyIgY2xhc3M9ImNscy0yIiBkPSJNOTg4LjM3NzMxMjkzNDksODEuNzk3ODIwNTIzNmM5LjIxNjA5NjgzNDIsNC40MTE3MDAwNzE0LDEyLjY1MjkxNzc0OTEsMTQuMDE5MjkzOTE0LDEwLjcxMzgwNzM3MjcsMjMuOTc4NzIzMzQ4LTIuMjU1Mzc1NjQ0MSwxMS41ODM3OTM3MDY3LTEzLjM0MTU4ODc3NzYsMTkuNzgzMTQ1MTc3LTI0LjQ5MTQxNjM4MzQsMTkuNzYyMDEyMTEyOS0xMi40NDQzNjQ0NjU3LS4wMjM1ODY2OTIyLTIyLjY1NDc0ODY1NDktOC4yNjg2NjA1NDQ2LTI1LjAwNDc2MTM1NTMtMjEuMDQ1MDAzOTk4M2w4LjcxMzI4NDczNzQtMi43NzM3NjU4ODJjMS42Mzg2Njg1MzUyLDkuNjY2NjI2MjI4NCw5LjEzMTU4ODM5ODQsMTYuMjQxODA2ODM0MywxOC4zODE3NzYyOTgyLDE0LjgyNTc5Njc1OTUsOS4xMTY2OTk3NjMtMS4zOTU1NzU4MzYyLDE2LjA1Nzk5Nzg4MjItMTAuMDcxODM2ODI1NywxMi45NjI2NDEyMjExLTE5LjY1MTcxODc5MzEtMS41OTc5NDg3MTcyLTQuOTQ1NTIzODIwNS02Ljk5OTU4MTAyNjktOC4xMDQzMDQwOTAzLTExLjQ5ODQ4MDM0MzQtMTAuMjUwNjkyMzYxM2wtMTQuMzQxMDA0MTM2OS02Ljg0MTk3NjQyNzZjLTEwLjE4MDY0MjY5MzctNC44NTcxMDE4MjI0LTEzLjU1MTE5NjM2OTUtMTcuNjY2MjY2Mjc1NS02LjkyNTc5MzY4ODEtMjcuNzQ3NjE2OTEzNSw2LjI5NzU4NTUyMTUtOS41ODI1MzcyMjM1LDIwLjQzODA1NjA3MjYtMTIuNDcwODQ1OTc1OCwzMC4wMzY2NTE5NTU4LTYuNjEyOTEwNzA3MSw0LjE0OTE4MzUyOTQsMi41MzIyMDg3NTUyLDcuNTE0ODY3MDQzLDQuODMxMDc1NTkwMiw5Ljc1MTMzMDMxLDkuMzAzNzA0MjI5bC03LjQzNjEwOTkyMTgsNS4wNjc4NTg2ODQ4Yy0yLjI0MTQxOTM5MjEtNS4yNTQ5Mjk5NzgtNi41Mzk5NTIwNzM5LTguMDIwMjAyOTU5Ni0xMC43MjQzMjU4NjYxLTguNDU0MDEyODE0OS01LjUwOTE4MDYyNTQtLjU3MTE1NzU4OTgtMTAuNDc5MDIwOTQ3NS41OTc5NTI0MzQ5LTEzLjUyOTc4NjEwOTIsNS4xMTE4NzQ3MzQyLTIuMDE4Njg0OTEwMSwyLjk4Njg1MjkxOTktMi42OTgyMjY2MTUsNi40NTcxNTA3OTQ4LTEuNjE3Mzk0MzU1NCwxMC4xMDA2MjY1NTQ4LjcyMTA2NDg4NTMsMi40MzA3MDMxOTksMy4zNDYzMzkwODExLDQuODU3MDE0ODMyMSw2LjUwMTEwMjQxMzMsNi4zNjcxODQ0Njk5bDE4LjUwODQ3Nzg1MTEsOC44NTk5MTcwMDQ2WiIvPgogICAgICAgICAgPHBhdGggaWQ9IkUtMiIgZGF0YS1uYW1lPSJFIiBjbGFzcz0iY2xzLTIiIGQ9Ik0xMDcyLjA1MzI1MjI4NjYsODQuNTczODc0NDI0NWwtMzEuMTI3NTQwOTkxNy4wNTk3NTI4Mjc0LjExOTkzMTY4NDksMzAuODYzNzE4NzY5OCwzMS44NDEzOTUxODI2LS4wNTA0Mzc5ODljLjQxMDA5NTE1NzIsMy4yOTQxOTk5MzQ0LjQ4NDg3Njc3NzcsNS43OTg0MDAxNzMyLS4zMjM1NjM3OTMyLDguNjU1OTk3NzIyN2wtNDEuNDkzNDM3MzI5Mi0uMTUwMjAyOTMyNi4wODY0NTE3Njk5LTgwLjE1OTI4OTYzMTcsNDEuNzYxMDk2OTgwNC0uMDkxODY3ODkzNy4wMDg1MTI5MTc0LDguOTA4Mzg0MzU4NS0zMi4yNDQ0NTk2NTctLjAyMjkyNzM5OTMuMTA3MzExNjU5MywyMy4yMTQyODQwODExLDMxLjIzNjYyMjg4NjYtLjE0NzE5NTY3NTguMDI3Njc4NjksOC45MTk3ODM3NjI0WiIvPgogICAgICAgIDwvZz4KICAgICAgPC9nPgogICAgPC9nPgogIDwvZz4KPC9zdmc+"
+    },
+    {
+      Type = "Label",
+      Text = "KIN-1000 Line Interactive UPS",
+      Position = {25, 68},
+      Size = {280, 20},
+      Font = "Roboto",
+      FontSize = 16,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Header",
+      Text = "Status",
+      Position = {5, 373},
+      Size = {300, 20},
+      Font = "Roboto",
+      FontSize = 14,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = true
+    },
+    {
+      Type = "Header",
+      Text = "Readings",
+      Position = {5, 248},
+      Size = {300, 20},
+      Font = "Roboto",
+      FontSize = 14,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = true
+    },
+    {
+      Type = "Label",
+      Text = "On Battery",
+      Position = {5, 398},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Low Battery",
+      Position = {5, 414},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "AVR On",
+      Position = {171, 446},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Overload",
+      Position = {5, 446},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Fault",
+      Position = {5, 462},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Bad Battery",
+      Position = {5, 430},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Test Mode",
+      Position = {171, 462},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Pre-Shutdown Active",
+      Position = {171, 414},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Schedule Active",
+      Position = {171, 398},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "No-Load Shutdown Disabled",
+      Position = {171, 430},
+      Size = {134, 16},
+      Font = "Roboto",
+      FontSize = 10,
+      Color = {51, 51, 51},
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Shutdown Mode",
+      Position = {155, 348},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Input Voltage",
+      Position = {5, 308},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Output Voltage",
+      Position = {155, 308},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Input Frequency",
+      Position = {5, 328},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Output Frequency",
+      Position = {155, 328},
+      Size = {95, 20},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Header",
+      Text = "Commands",
+      Position = {5, 138},
+      Size = {300, 20},
+      Font = "Roboto",
+      FontSize = 14,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = true
+    },
+    {
+      Type = "Label",
+      Text = "Self Test",
+      Position = {5, 163},
+      Size = {80, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "AC Restart On",
+      Position = {5, 191},
+      Size = {80, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "AC Restart Off",
+      Position = {5, 218},
+      Size = {80, 25},
+      Font = "Roboto",
+      FontSize = 11,
+      Color = {51, 51, 51},
+      HTextAlign = "Right",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "min.",
+      Position = {215, 163},
+      Size = {30, 10},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Set",
+      Position = {275, 163},
+      Size = {30, 10},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "min.",
+      Position = {215, 203},
+      Size = {30, 10},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "sec.",
+      Position = {245, 203},
+      Size = {30, 10},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    },
+    {
+      Type = "Label",
+      Text = "Set",
+      Position = {275, 203},
+      Size = {30, 10},
+      Font = "Roboto",
+      FontSize = 9,
+      Color = {51, 51, 51},
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      IsBold = false
+    }
+  }
+  return layout, graphics
+end
+
+--=============================================================================
+-- Run-time
+--=============================================================================
+if Controls then
+  --*** Control aliases ***
+  Status = Controls.ConnectionStatus
+
+  --*** Variables ***
+  PollInterval = Properties["Poll Interval (s)"].Value
+  DebugTx = false
+  DebugRx = false
+  DebugFunctions = false
+  Busy = false
+  PendingExpectBytes = nil
+  ReceiveBuffer = ""
+  InvalidFrameReported = false
+  ClosingForRetry = false
+
+  --*** Objects and tables ***
+  SerialPort = SerialPorts[1]
+  CmdQueue = {}
+  PollTimer = Timer.New()
+  CmdTimeoutTimer = Timer.New()
+  RetryTimer = Timer.New()
+  StartupTimer = Timer.New()
+  Readings = {
+    "LoadLevel", "BatteryLevel", "InputVoltage", "OutputVoltage",
+    "InputFrequency", "OutputFrequency", "AVRMode", "NominalVoltage",
+    "ShutdownModeDisplay"
+  }
+  Indicators = {
+    "SystemFault", "OnBattery", "LowBattery", "AVRActive", "Overload",
+    "Fault", "BatteryBad", "TestMode", "PreSDCountActive",
+    "ScheduleCountActive", "NoLoadShutdownDisabled"
+  }
+
+  --*** Constants ***
+  StatusState = {
+    OK = 0,
+    COMPROMISED = 1,
+    FAULT = 2,
+    NOTPRESENT = 3,
+    MISSING = 4,
+    INITIALIZING = 5
+  }
+  RetryInterval = 5
+  ResponseTimeout = 2
+  CommandQuietTime = 0.3
+  NominalVoltages = {
+    [0] = "100V", [1] = "110V", [2] = "115V", [3] = "120V",
+    [7] = "200V", [8] = "220V", [9] = "230V", [10] = "240V"
+  }
+
+  --*** Recommended runtime functions and helpers ***
+  function Log(msg)
+    print(msg)
+  end
+
+  function Trace(msg)
+    if DebugFunctions then
+      print("CALL: " .. msg)
+    end
+  end
+
+  function SetupDebugPrint()
+    local debugPrint = Properties["Debug Print"].Value
+    DebugTx = debugPrint == "Tx" or debugPrint == "Tx/Rx" or debugPrint == "All"
+    DebugRx = debugPrint == "Rx" or debugPrint == "Tx/Rx" or debugPrint == "All"
+    DebugFunctions = debugPrint == "All"
+  end
+
+  function HexDump(data)
+    local parts = {}
+    for i = 1, #data do
+      parts[#parts + 1] = string.format("%02X", string.byte(data, i))
+    end
+    return table.concat(parts, " ")
+  end
+
+  function ClearReadings()
+    for _, name in ipairs(Readings) do
+      Controls[name].String = ""
+    end
+    for _, name in ipairs(Indicators) do
+      Controls[name].Boolean = false
+    end
+  end
+
+  function ClearVariables()
+    Trace("ClearVariables()")
+    PollTimer:Stop()
+    CmdTimeoutTimer:Stop()
+    CmdQueue = {}
+    Busy = false
+    PendingExpectBytes = nil
+    ReceiveBuffer = ""
+    InvalidFrameReported = false
+    ClearReadings()
+  end
+
+  function ScheduleRetry()
+    RetryTimer:Stop()
+    RetryTimer:Start(RetryInterval)
+  end
+
+  function Disconnected(reason, message)
+    Trace("Disconnected(" .. reason .. ")")
+    ClearVariables()
+    if ClosingForRetry then
+      return
+    end
+    Status.Value = reason == "Error" and StatusState.FAULT or StatusState.MISSING
+    Status.String = "Serial " .. reason:lower()
+    Log("Serial " .. reason:lower() .. (message and message ~= "" and (": " .. message) or ""))
+    ScheduleRetry()
+  end
+
+  function OpenSerialPort()
+    Trace("OpenSerialPort()")
+    RetryTimer:Stop()
+    local opened, err = pcall(function()
+      if SerialPort.IsOpen then
+        ClosingForRetry = true
+        SerialPort:Close()
+        ClosingForRetry = false
+      end
+      SerialPort:Open(1200, 8, "N", 1)
+    end)
+    ClosingForRetry = false
+    if not opened then
+      ClearVariables()
+      Status.Value = StatusState.FAULT
+      Status.String = "Serial port open failed"
+      Log("Serial port open failed: " .. tostring(err))
+      ScheduleRetry()
+    end
+  end
+
+  function AdvanceQueue()
+    Busy = false
+    PendingExpectBytes = nil
+    ReceiveBuffer = ""
+    CmdTimeoutTimer:Stop()
+    ServiceQueue()
+  end
+
+  function ServiceQueue()
+    if Busy or #CmdQueue == 0 then
+      return
+    end
+    if not SerialPort.IsOpen then
+      Disconnected("Closed", "Unable to write: port closed")
+      return
+    end
+    local item = table.remove(CmdQueue, 1)
+    Busy = true
+    PendingExpectBytes = item.expectBytes
+    ReceiveBuffer = ""
+    InvalidFrameReported = false
+    if DebugTx then
+      print("TX: " .. HexDump(item.data))
+    end
+    CmdTimeoutTimer:Start(item.expectBytes and ResponseTimeout or CommandQuietTime)
+    local written, err = pcall(function()
+      SerialPort:Write(item.data)
+    end)
+    if not written then
+      Disconnected("Error", "Write failed: " .. tostring(err))
+    end
+  end
+
+  function Send(cmd, expectBytes)
+    Trace("Send(" .. HexDump(cmd) .. ")")
+    if not SerialPort.IsOpen then
+      Log("Unable to send command: serial port closed")
+      return
+    end
+    CmdQueue[#CmdQueue + 1] = {data = cmd, expectBytes = expectBytes}
+    ServiceQueue()
+  end
+
+  function PollDevice()
+    Trace("PollDevice()")
+    Send(string.char(0x01), 16)
+  end
+
+  function SelfTest()
+    Trace("SelfTest()")
+    Send(string.char(0x03))
+  end
+
+  function EnableACRestart()
+    Trace("EnableACRestart()")
+    Send(string.char(0xB9))
+  end
+
+  function DisableACRestart()
+    Trace("DisableACRestart()")
+    Send(string.char(0xBA))
+  end
+
+  function SetWakeUp(minutes)
+    minutes = math.floor(math.max(0, math.min(1440, minutes or 0)))
+    Trace("SetWakeUp(" .. minutes .. ")")
+    local highByte = math.floor(minutes / 256)
+    local lowByte = minutes % 256
+    Send(string.char(0x04, highByte, lowByte))
+  end
+
+  function SetPreSD(minutes, seconds)
+    minutes = math.floor(math.max(0, math.min(255, minutes or 0)))
+    seconds = math.floor(math.max(0, math.min(255, seconds or 0)))
+    Trace("SetPreSD(" .. minutes .. ", " .. seconds .. ")")
+    Send(string.char(0xBC, minutes, seconds))
+  end
+
+  -- Static model information is included in the status block, not a separate command.
+  function GetDeviceInfo(modelByte)
+    Trace("GetDeviceInfo()")
+    local voltageCode = modelByte & 0x0F
+    Controls.NominalVoltage.String = NominalVoltages[voltageCode] or ("Unknown (code " .. voltageCode .. ")")
+  end
+
+  function IsValidResponse(data)
+    return #data == 16 and string.byte(data, 6) == 0xFF and (string.byte(data, 11) & 0x80) ~= 0
+  end
+
+  function ParsePollResponse(data)
+    Trace("ParsePollResponse()")
+    if not IsValidResponse(data) then
+      return false
+    end
+    local b = {}
+    for i = 0, 15 do
+      b[i] = string.byte(data, i + 1)
+    end
+
+    Controls.LoadLevel.String = tostring(b[0])
+    Controls.BatteryLevel.String = tostring(b[1])
+    Controls.InputVoltage.String = b[2] .. " V"
+    Controls.OutputVoltage.String = b[3] .. " V"
+    Controls.InputFrequency.String = b[4] .. " Hz"
+    Controls.OutputFrequency.String = b[6] .. " Hz"
+
+    local f9 = b[9]
+    -- Byte 9 bit 7 is SD MODE DISPLAY; the protocol does not name its states.
+    Controls.ShutdownModeDisplay.String = (f9 & 0x80) ~= 0 and "Set" or "Clear"
+    local onBattery = (f9 & 0x01) ~= 0
+    local lowBattery = (f9 & 0x02) ~= 0
+    local avrActive = (f9 & 0x08) ~= 0
+    local avrBoost = (f9 & 0x10) ~= 0
+    local overload = (f9 & 0x20) ~= 0
+
+    Controls.OnBattery.Boolean = onBattery
+    Controls.LowBattery.Boolean = lowBattery
+    Controls.AVRActive.Boolean = avrActive
+    Controls.AVRMode.String = avrActive and (avrBoost and "Boost" or "Buck") or "-"
+    Controls.Overload.Boolean = overload
+
+    local f10 = b[10]
+    local fault = (f10 & 0x01) ~= 0
+    local batBad = (f10 & 0x02) ~= 0
+    local testMode = (f10 & 0x04) ~= 0
+    local preSD = (f10 & 0x10) ~= 0
+    local schedCount = (f10 & 0x20) ~= 0
+    local noLoadDis = (f10 & 0x40) ~= 0
+
+    Controls.Fault.Boolean = fault
+    Controls.BatteryBad.Boolean = batBad
+    Controls.TestMode.Boolean = testMode
+    Controls.PreSDCountActive.Boolean = preSD
+    Controls.ScheduleCountActive.Boolean = schedCount
+    Controls.NoLoadShutdownDisabled.Boolean = noLoadDis
+
+    GetDeviceInfo(b[12])
+
+    Controls.SystemFault.Boolean = fault or batBad or overload or lowBattery
+    -- Preserve the existing output truth table; low battery is reduced service.
+    Controls.SystemFault.Color = lowBattery and not (fault or batBad or overload)
+      and IndicatorOrangeHex or IndicatorRedHex
+
+    -- A successful poll confirms communication, not necessarily healthy power.
+    local problems = {}
+    if fault then
+      table.insert(problems, "UPS fault")
+    end
+    if batBad then
+      table.insert(problems, "Bad battery")
+    end
+    if overload then
+      table.insert(problems, "Overload")
+    end
+    if #problems > 0 then
+      Status.Value = StatusState.FAULT
+    elseif onBattery or lowBattery then
+      Status.Value = StatusState.COMPROMISED
+    else
+      Status.Value = StatusState.OK
+    end
+    if onBattery then
+      table.insert(problems, "On battery")
+    end
+    if lowBattery then
+      table.insert(problems, "Low battery")
+    end
+    if avrActive then
+      table.insert(problems, "AVR regulating input")
+    end
+    Status.String = #problems > 0 and table.concat(problems, "; ") or "Connected"
+    return true
+  end
+
+  -- Fixed-length binary framing: CR/LF can occur inside the response.
+  -- Slide over bad bytes until both documented markers match. This is not a checksum.
+  function ParseResponse()
+    local data = SerialPort:Read(SerialPort.BufferLength)
+    if not data or #data == 0 then
+      return
+    end
+    if DebugRx then
+      print("RX: " .. HexDump(data))
+    end
+    if not Busy or not PendingExpectBytes then
+      Trace("ParseResponse(): ignoring unsolicited data")
+      return
+    end
+    ReceiveBuffer = ReceiveBuffer .. data
+    while #ReceiveBuffer >= 16 do
+      local frame = ReceiveBuffer:sub(1, 16)
+      if IsValidResponse(frame) then
+        ParsePollResponse(frame)
+        AdvanceQueue()
+        return
+      end
+      ReceiveBuffer = ReceiveBuffer:sub(2)
+      if not InvalidFrameReported then
+        Log("Invalid poll response; searching for a valid frame")
+        InvalidFrameReported = true
+      end
+    end
+  end
+
+  function Connect()
+    Trace("Connect()")
+    RetryTimer:Stop()
+    ClearVariables()
+    Status.Value = StatusState.INITIALIZING
+    Status.String = "Serial open; awaiting valid poll"
+    Log("Serial port connected")
+    PollTimer:Start(PollInterval)
+    PollDevice()
+  end
+
+  --*** Event handlers ***
+  StartupTimer.EventHandler = function()
+    StartupTimer:Stop()
+    OpenSerialPort()
+  end
+  RetryTimer.EventHandler = function()
+    RetryTimer:Stop()
+    OpenSerialPort()
+  end
+  PollTimer.EventHandler = function()
+    if not Busy and #CmdQueue == 0 then
+      PollDevice()
+    end
+  end
+  CmdTimeoutTimer.EventHandler = function()
+    CmdTimeoutTimer:Stop()
+    if PendingExpectBytes then
+      ClearReadings()
+      Status.Value = StatusState.MISSING
+      Status.String = "No valid poll response"
+      Log("No valid response to status poll")
+      if SerialPort.IsOpen and SerialPort.BufferLength > 0 then
+        SerialPort:Read(SerialPort.BufferLength)
+      end
+    end
+    AdvanceQueue()
+  end
+  SerialPort.Data = ParseResponse
+  SerialPort.Connected = Connect
+  SerialPort.Closed = function()
+    Disconnected("Closed")
+  end
+  SerialPort.Error = function(_, message)
+    Disconnected("Error", message)
+  end
+  SerialPort.Timeout = function()
+    Disconnected("Timeout")
+  end
+  SerialPort.Reconnect = function()
+    Log("Serial port reconnecting")
+  end
+  Controls.SelfTestBtn.EventHandler = function(ctl)
+    if ctl.Value == 1 then
+      SelfTest()
+    end
+  end
+  Controls.EnableACRestartBtn.EventHandler = function(ctl)
+    if ctl.Value == 1 then
+      EnableACRestart()
+    end
+  end
+  Controls.DisableACRestartBtn.EventHandler = function(ctl)
+    if ctl.Value == 1 then
+      DisableACRestart()
+    end
+  end
+  Controls.SetWakeUpBtn.EventHandler = function(ctl)
+    if ctl.Value == 1 then
+      SetWakeUp(Controls.WakeUpMinutes.Value)
+    end
+  end
+  Controls.SetPreSDBtn.EventHandler = function(ctl)
+    if ctl.Value == 1 then
+      SetPreSD(Controls.PreSDMinutes.Value, Controls.PreSDSeconds.Value)
+    end
+  end
+
+  --*** Initialization ***
+  function Initialization()
+    SetupDebugPrint()
+    print(PluginInfo.Name .. " v" .. PluginInfo.Version)
+    Trace("Initialization()")
+    ClearVariables()
+    Status.Value = StatusState.INITIALIZING
+    Status.String = "Initializing..."
+    StartupTimer:Start(1)
+  end
+
+  Initialization()
+end

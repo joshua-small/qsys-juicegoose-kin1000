@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PackageId>JoshuaSmall.Qsys.JuiceGooseKin1000</PackageId>
+    <Version>1.0.0.25</Version>
+    <Title>Juice Goose KIN-1000</Title>
+    <Authors>Joshua Small</Authors>
+    <Description>Juice Goose KIN-1000 UPS serial control and monitoring for Q-SYS.</Description>
+    <PackageProjectUrl>https://github.com/joshua-small/qsys-juicegoose-kin1000</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/joshua-small/qsys-juicegoose-kin1000</RepositoryUrl>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageIconUrl>https://joshua-small.github.io/qsys-juicegoose-kin1000/icon.png</PackageIconUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>Q-SYS;Plugin;JuiceGooseKin1000</PackageTags>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NoWarn>NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="content/JuiceGooseKin1000ApRmUps.qplug" Pack="true" PackagePath="content/" />
+    <None Include="icon.png" Pack="true" PackagePath="/" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
