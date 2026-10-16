@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "content/JuiceGooseKin1000ApRmUps.qplug").read_bytes()
-assert hashlib.sha256(source).hexdigest() == "06553de7ae9c8bcbc6bc2e1d0918ab3159ffe7a0675267e1ca3931c357daa407", "Update the reviewed source digest for an intentional plugin revision"
+assert hashlib.sha256(source).hexdigest() == "d704f5034a2621256f2f63dce93bc5988e965c945852999f195b04231a51f71a", "Update the reviewed source digest for an intentional plugin revision"
 info = re.search(r"PluginInfo\s*=\s*\{(.*?)\}", source.decode("utf-8-sig"), re.S)[1]
 version = re.search(r'\bVersion\s*=\s*"([^"]+)"', info)[1]
 project = ET.parse(root / "JuiceGooseKin1000.csproj").getroot()

@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <PackageId>JoshuaSmall.Qsys.JuiceGooseKin1000</PackageId>
-    <Version>1.0.0.25</Version>
+    <Version>1.0.0.26</Version>
     <Title>Juice Goose KIN-1000</Title>
     <Authors>Joshua Small</Authors>
     <Description>Juice Goose KIN-1000 UPS serial control and monitoring for Q-SYS.</Description>

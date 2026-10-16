@@ -1,0 +1,368 @@
+{
+  "variants": [
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "None",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "None",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Tx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Tx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "All",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 2,
+      "Debug Print": "All",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "None",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "None",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Tx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Tx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "All",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 5,
+      "Debug Print": "All",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "None",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "None",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Tx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Tx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Tx/Rx",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "Function Calls",
+      "plugin_show_debug": true
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "All",
+      "plugin_show_debug": false
+    },
+    {
+      "Poll Interval (s)": 60,
+      "Debug Print": "All",
+      "plugin_show_debug": true
+    }
+  ],
+  "pages": [
+    {
+      "name": "Setup",
+      "size": [
+        400,
+        440
+      ],
+      "captions": [
+        "Setup",
+        "KIN-1000 Serial Connection",
+        "Baud Rate:",
+        "1200",
+        "Data Bits:",
+        "8",
+        "Parity:",
+        "None",
+        "Stop Bits:",
+        "1",
+        "Connection Status",
+        "Assign the Serial Port pin on the schematic."
+      ],
+      "labels": {
+        "ConnectionStatus": "Connection Status"
+      },
+      "canvas": [
+        0,
+        0,
+        400,
+        440
+      ],
+      "brand_panel": [
+        0,
+        0,
+        400,
+        80
+      ],
+      "content_panel": [
+        5,
+        110,
+        390,
+        295
+      ],
+      "title_box": [
+        7,
+        86,
+        380,
+        22
+      ],
+      "rows": [],
+      "logo": {
+        "sha256": "60decb75cf4275734eebe586895d75ae906da10adf83238c660877322462b460",
+        "box": [
+          12.5,
+          11.194420861311748,
+          375,
+          57.611158277376504
+        ]
+      }
+    },
+    {
+      "name": "Controls",
+      "size": [
+        400,
+        846
+      ],
+      "captions": [
+        "Controls",
+        "Commands",
+        "Self Test:",
+        "AC Restart On:",
+        "AC Restart Off:",
+        "Scheduling",
+        "Wake Up (min):",
+        "Pre-shutdown (min):",
+        "Pre-shutdown (sec):",
+        "Readings",
+        "Nominal Voltage:",
+        "Load Level:",
+        "Battery Level:",
+        "Input Voltage:",
+        "Output Voltage:",
+        "Input Frequency:",
+        "Output Frequency:",
+        "AVR Mode:",
+        "Shutdown Mode:",
+        "Status",
+        "System Fault:",
+        "UPS Fault:",
+        "Bad Battery:",
+        "Overload:",
+        "Low Battery:",
+        "On Battery:",
+        "AVR Active:",
+        "Test Mode:",
+        "Shutdown Countdown:",
+        "Scheduled Countdown:",
+        "No-load Shutdown Off:"
+      ],
+      "labels": {
+        "SelfTestBtn": "Self Test:",
+        "EnableACRestartBtn": "AC Restart On:",
+        "DisableACRestartBtn": "AC Restart Off:",
+        "WakeUpMinutes": "Wake Up (min):",
+        "PreSDMinutes": "Pre-shutdown (min):",
+        "PreSDSeconds": "Pre-shutdown (sec):",
+        "NominalVoltage": "Nominal Voltage:",
+        "LoadLevel": "Load Level:",
+        "BatteryLevel": "Battery Level:",
+        "InputVoltage": "Input Voltage:",
+        "OutputVoltage": "Output Voltage:",
+        "InputFrequency": "Input Frequency:",
+        "OutputFrequency": "Output Frequency:",
+        "AVRMode": "AVR Mode:",
+        "ShutdownModeDisplay": "Shutdown Mode:",
+        "SystemFault": "System Fault:",
+        "Fault": "UPS Fault:",
+        "BatteryBad": "Bad Battery:",
+        "Overload": "Overload:",
+        "LowBattery": "Low Battery:",
+        "OnBattery": "On Battery:",
+        "AVRActive": "AVR Active:",
+        "TestMode": "Test Mode:",
+        "PreSDCountActive": "Shutdown Countdown:",
+        "ScheduleCountActive": "Scheduled Countdown:",
+        "NoLoadShutdownDisabled": "No-load Shutdown Off:"
+      },
+      "canvas": [
+        0,
+        0,
+        400,
+        846
+      ],
+      "brand_panel": [
+        0,
+        0,
+        400,
+        80
+      ],
+      "content_panel": [
+        5,
+        110,
+        390,
+        701
+      ],
+      "title_box": [
+        7,
+        86,
+        380,
+        22
+      ],
+      "rows": [
+        [
+          "NominalVoltage",
+          "LoadLevel",
+          "BatteryLevel",
+          "InputVoltage",
+          "OutputVoltage",
+          "InputFrequency",
+          "OutputFrequency",
+          "AVRMode",
+          "ShutdownModeDisplay"
+        ],
+        [
+          "SelfTestBtn",
+          "EnableACRestartBtn",
+          "DisableACRestartBtn"
+        ],
+        [
+          "WakeUpMinutes",
+          "PreSDMinutes",
+          "PreSDSeconds"
+        ]
+      ],
+      "logo": {
+        "sha256": "60decb75cf4275734eebe586895d75ae906da10adf83238c660877322462b460",
+        "box": [
+          12.5,
+          11.194420861311748,
+          375,
+          57.611158277376504
+        ]
+      }
+    }
+  ]
+}
