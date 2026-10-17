@@ -2,17 +2,16 @@
 
 Control and monitor a Juice Goose KIN-1000 UPS using its binary RS-232 interface. Includes load/battery levels, input/output voltage and frequency, AVR/overload/fault/battery/test-mode status, self-test, AC-normal-restart, wake-up timer and pre-shutdown countdown.
 
-Source/package candidate: **1.0.0.26**. The published Library release remains
-**1.0.0.25** until a new release is published.
+Plugin and package version: **1.0.0.26**.
 
-The candidate has **Setup** and **Controls** pages, with the existing logo,
+Version 1.0.0.26 has **Setup** and **Controls** pages, with the existing logo,
 white canvas, gray panels, aligned fields, native group captions and version
 footers. Setup holds serial configuration and connection status; Controls holds
 commands, scheduling, readings and indicators. Existing identity, all control/pin
 bindings and momentary button behavior are preserved. Serial/UPS behavior is
 unchanged; Function Calls is now a separate debug choice.
 
-For local candidate testing, copy only `content/JuiceGooseKin1000ApRmUps.qplug`
+For manual source installation, copy only `content/JuiceGooseKin1000ApRmUps.qplug`
 into Designer's Plugins folder after backing up the previous file elsewhere.
 Designer and hardware acceptance remain deferred; see the
 [source review](docs/SDK-REVIEW-1.0.0.26.md).
